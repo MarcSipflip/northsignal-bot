@@ -28,9 +28,9 @@ Questions stay open for about three hours, and GitHub's own `schedule` trigger p
 
 ### Optional: a safety net outside GitHub
 
-If both timers were lost at the same moment, for example in a long GitHub outage, nothing on GitHub would restart them. The `watchdog` folder covers that case from a machine of your own. It asks GitHub when the last forecasting run started. If none started in the last 35 minutes and none is under way, it starts one, and that run restarts the timers. It does nothing while the bot is paused, that is, while either workflow is disabled by hand.
+If both timers were lost at the same moment, for example in a long GitHub outage, nothing on GitHub would restart them. The `watchdog` folder covers that case from a Linux server of your own that is always on. Every 15 minutes, cron runs `server_watchdog.py`, which asks GitHub when the last forecasting run started. If none started in the last 35 minutes and none is under way, it starts one, and that run restarts the timers. It does nothing while the bot is paused, that is, while either workflow is disabled by hand.
 
-**On a Linux server that is always on.** Cron runs `server_watchdog.py` every 15 minutes. It needs Python 3 on the server, SSH access as root with a key, and a GitHub token of its own: a fine-grained token limited to this repository, with the permission "Actions: Read and write".
+It needs Python 3 on the server, SSH access as root with a key, and a GitHub token of its own: a fine-grained token limited to this repository, with the permission "Actions: Read and write".
 
 ```bash
 python watchdog/deploy.py --host root@your-server install             # shows what would be done; add --apply to do it
@@ -39,16 +39,6 @@ python watchdog/deploy.py --host root@your-server remove --apply      # takes ev
 ```
 
 The check runs as a user of its own without login and adds one line per check to `/opt/northsignal-watchdog/watchdog.log`. In a fork, set your own repository at the top of `server_watchdog.py` before installing.
-
-**On a Windows computer.** A scheduled task runs `watchdog.ps1` once an hour. It needs the [GitHub CLI](https://cli.github.com/) signed in on that computer, and it only runs while you are signed in to Windows. No window appears.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File watchdog\install.ps1           # install or update the hourly task
-powershell -ExecutionPolicy Bypass -File watchdog\install.ps1 -Remove   # remove it
-powershell -ExecutionPolicy Bypass -File watchdog\tests.ps1             # check its decisions; nothing is sent to GitHub
-```
-
-The task is called **NorthSignal bot watchdog** in Task Scheduler. Each check adds one line to `%LOCALAPPDATA%\northsignal-bot\watchdog\watchdog.log`. In a fork, set your own repository at the top of `watchdog.ps1` before installing.
 
 ---
 
