@@ -73,6 +73,10 @@ async def forecast(bot: NorthSignalBot, mode: str, max_questions: int) -> list:
 
 
 def main() -> int:
+    # The banners use emoji; a Windows console with a legacy code page would crash on them.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     parser = argparse.ArgumentParser(description="Run the NorthSignal forecasting bot")

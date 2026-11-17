@@ -5,6 +5,7 @@ every model is replaced by a canned fake.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import unittest
@@ -26,6 +27,12 @@ from forecasting_tools import (  # noqa: E402
     NumericDistribution,
     NumericQuestion,
     PredictedOptionList,
+)
+from forecasting_tools.ai_models.resource_managers.hard_limit_manager import (  # noqa: E402
+    HardLimitExceededError,
+)
+from forecasting_tools.ai_models.resource_managers.monetary_cost_manager import (  # noqa: E402
+    MonetaryCostManager,
 )
 from forecasting_tools.data_models.multiple_choice_report import PredictedOption  # noqa: E402
 from forecasting_tools.data_models.numeric_report import Percentile  # noqa: E402
@@ -243,6 +250,42 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         question = BinaryQuestion(question_text="Will it rain?", resolution_criteria="No links here.")
         research = await bot.run_research(question)
         self.assertIn("No research could be gathered", research)
+
+
+class SpendingCapTests(unittest.IsolatedAsyncioTestCase):
+    def _bot(self) -> NorthSignalBot:
+        profile = Profile(
+            name="test", forecasters=(ModelSpec("openrouter/test/a"),), predictions_per_question=1,
+            searchers=(), helper=ModelSpec("openrouter/test/helper"),
+            max_source_pages=1, max_run_cost_usd=1.0,
+        )
+        return NorthSignalBot(profile=profile, publish_reports_to_metaculus=False)
+
+    async def test_nothing_new_starts_once_the_cap_is_passed(self) -> None:
+        bot = self._bot()
+        question = BinaryQuestion(question_text="Will it rain?", resolution_criteria="No links here.")
+        with MonetaryCostManager(1.0) as manager:
+            bot.get_llm("default", "llm")  # under the cap: allowed
+            MonetaryCostManager.increase_current_usage_in_parent_managers(1.5)
+            self.assertEqual(manager.current_usage, 1.5)
+            with self.assertRaises(HardLimitExceededError):
+                bot.get_llm("default", "llm")
+            with self.assertRaises(HardLimitExceededError):
+                await bot.run_research(question)
+
+
+class SpendingCapAcrossEventLoopTests(unittest.TestCase):
+    def test_cap_set_outside_the_event_loop_is_enforced_inside_it(self) -> None:
+        """run_bot.py opens the cap, then starts the event loop: spending inside must count."""
+
+        async def spend_then_check() -> None:
+            MonetaryCostManager.increase_current_usage_in_parent_managers(2.0)
+            MonetaryCostManager.raise_error_if_limit_would_be_reached()
+
+        with MonetaryCostManager(1.0) as manager:
+            with self.assertRaises(HardLimitExceededError):
+                asyncio.run(spend_then_check())
+            self.assertEqual(manager.current_usage, 2.0)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from forecasting_tools import (
     ReasonedPrediction,
     clean_indents,
 )
+from forecasting_tools.ai_models.resource_managers.monetary_cost_manager import MonetaryCostManager
 from forecasting_tools.data_models.multiple_choice_report import PredictedOption
 from forecasting_tools.data_models.questions import DiscreteQuestion
 
@@ -84,6 +85,8 @@ class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]
         """Each forecast asks for the "default" model once, so handing out the pool in turn
         spreads the forecasts of one question across every model in the profile."""
         if purpose == "default" and guarantee_type == "llm":
+            # Enforce the run's spending cap here ourselves: no new forecast starts once it is passed.
+            MonetaryCostManager.raise_error_if_limit_would_be_reached()
             llm = self._forecasters[self._next_forecaster % len(self._forecasters)]
             self._next_forecaster += 1
             return llm
@@ -98,6 +101,7 @@ class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]
     # ---------------------------------------------------------------- research
 
     async def run_research(self, question: MetaculusQuestion) -> str:
+        MonetaryCostManager.raise_error_if_limit_would_be_reached()  # the run's spending cap
         async with self._concurrency_limiter:
             results = await asyncio.gather(
                 self._research_resolution_sources(question),
