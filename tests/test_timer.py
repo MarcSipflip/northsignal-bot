@@ -33,17 +33,22 @@ class FakeGitHub:
         self.listing_fails = False
         self.timer_listings_missing_new_runs = 0  # GitHub can take a moment to list a new run
         self.forecast_run_minutes: float | None = None  # when set, forecasting runs finish by themselves
+        self.issues: list[dict] = []
+        self.issue_calls_fail = False
+        self.assigning_fails = False
         self.next_id = 1000
 
     # -- helpers for arranging a scenario
 
-    def add_run(self, workflow: str, title: str, status: str, minutes_ago: float) -> dict:
+    def add_run(self, workflow: str, title: str, status: str, minutes_ago: float, conclusion: str = "") -> dict:
         self.next_id += 1
         run = {
             "databaseId": self.next_id,
             "workflow": workflow,
             "displayTitle": title,
             "status": status,
+            "conclusion": conclusion,
+            "url": f"https://github.com/{REPO}/actions/runs/{self.next_id}",
             "createdAt": stamp(self.clock - timedelta(minutes=minutes_ago)),
         }
         self.runs.append(run)
@@ -77,7 +82,10 @@ class FakeGitHub:
             if hidden:
                 self.timer_listings_missing_new_runs -= 1
             runs = [run for run in self.runs if run["workflow"] == workflow and not (hidden and run.get("new"))]
-            return json.dumps(runs)
+            if "--status" in args:
+                runs = [run for run in runs if run["status"] == args[args.index("--status") + 1]]
+            runs.sort(key=lambda run: (run["createdAt"], run["databaseId"]), reverse=True)  # newest first, as gh lists them
+            return json.dumps(runs[: int(args[args.index("--limit") + 1])])
         if args[:2] == ("workflow", "run"):
             if self.failing_starts > 0:
                 self.failing_starts -= 1
@@ -96,9 +104,38 @@ class FakeGitHub:
             self.cancelled.append(int(args[2]))
             for run in self.runs:
                 if run["databaseId"] == int(args[2]):
-                    run["status"] = "completed"
+                    run["status"], run["conclusion"] = "completed", "cancelled"
             return ""
+        if args[0] == "issue":
+            return self._issue(args[1:])
         raise AssertionError(f"unexpected gh call: {args}")
+
+    def _issue(self, args: tuple[str, ...]) -> str:
+        if self.issue_calls_fail:
+            raise GhError("HTTP 403: Resource not accessible by integration")
+        if args[0] == "list":
+            return json.dumps([issue for issue in self.issues if issue["state"] == "open"])
+        if args[0] == "create":
+            if "--assignee" in args and self.assigning_fails:
+                raise GhError("could not assign user")
+            self.issues.append(
+                {
+                    "number": len(self.issues) + 1,
+                    "state": "open",
+                    "title": args[args.index("--title") + 1],
+                    "body": args[args.index("--body") + 1],
+                    "assignee": args[args.index("--assignee") + 1] if "--assignee" in args else None,
+                    "updatedAt": stamp(self.clock),
+                    "comments": [],
+                }
+            )
+            return ""
+        if args[0] == "comment":
+            issue = next(issue for issue in self.issues if issue["number"] == int(args[1]))
+            issue["comments"].append(args[args.index("--body") + 1])
+            issue["updatedAt"] = stamp(self.clock)
+            return ""
+        raise AssertionError(f"unexpected gh issue call: {args}")
 
     def _api(self, args: tuple[str, ...]) -> str:
         if args[0] == "--method":
@@ -277,6 +314,95 @@ class TickTests(unittest.TestCase):
         self.assertEqual(self.timer.tick("a", run_id), 1)
 
         self.assertGreaterEqual(sum(self.github.slept), sum(timer.REARM_RETRY_DELAYS))
+
+
+class HealthTests(unittest.TestCase):
+    """Timer a tells the owner when forecasting runs keep failing."""
+
+    def setUp(self) -> None:
+        self.github = FakeGitHub()
+        self.timer = make_timer(self.github)
+        self.github.add_run(TIMER_WORKFLOW, "Timer b", "waiting", 20)
+
+    def finished_forecasts(self, *conclusions: str) -> list[dict]:
+        """Finished forecasting runs, oldest first, a quarter of an hour apart."""
+        count = len(conclusions)
+        return [
+            self.github.add_run(FORECAST_WORKFLOW, "Forecast", "completed", 15 * (count - index), conclusion)
+            for index, conclusion in enumerate(conclusions)
+        ]
+
+    def tick(self, lane: str = "a") -> int:
+        run = self.github.add_run(TIMER_WORKFLOW, f"Timer {lane}", "in_progress", 40)
+        result = self.timer.tick(lane, str(run["databaseId"]))
+        run["status"] = "completed"
+        return result
+
+    def test_four_runs_without_a_success_open_one_issue_for_the_owner(self) -> None:
+        runs = self.finished_forecasts("failure", "cancelled", "failure", "failure")
+
+        self.tick()
+        self.github.sleep(30 * 60)
+        self.tick()
+
+        self.assertEqual(len(self.github.issues), 1, "the alert must not be repeated while its issue is open")
+        issue = self.github.issues[0]
+        self.assertEqual(issue["title"], timer.ALERT_TITLE)
+        self.assertEqual(issue["assignee"], "owner")
+        self.assertIn(runs[-1]["url"], issue["body"])
+        self.assertEqual(issue["comments"], [])
+
+    def test_a_reminder_is_added_once_a_day(self) -> None:
+        self.finished_forecasts("failure", "failure", "failure", "failure")
+        self.tick()
+        self.github.sleep(25 * 60 * 60)
+        self.github.add_run(TIMER_WORKFLOW, "Timer b", "waiting", 20)
+
+        self.tick()
+        self.github.sleep(30 * 60)
+        self.tick()
+
+        self.assertEqual(len(self.github.issues), 1)
+        self.assertEqual(len(self.github.issues[0]["comments"]), 1)
+
+    def test_a_recent_success_means_no_alert(self) -> None:
+        self.finished_forecasts("failure", "failure", "failure", "failure", "success")
+
+        self.tick()
+
+        self.assertEqual(self.github.issues, [])
+
+    def test_a_success_among_the_last_four_means_no_alert(self) -> None:
+        self.finished_forecasts("success", "failure", "failure", "failure")
+
+        self.tick()
+
+        self.assertEqual(self.github.issues, [])
+
+    def test_only_timer_a_reports(self) -> None:
+        self.finished_forecasts("failure", "failure", "failure", "failure")
+        self.github.add_run(TIMER_WORKFLOW, "Timer a", "waiting", 20)
+
+        self.tick("b")
+
+        self.assertEqual(self.github.issues, [])
+
+    def test_the_issue_is_opened_even_when_the_owner_cannot_be_assigned(self) -> None:
+        self.finished_forecasts("failure", "failure", "failure", "failure")
+        self.github.assigning_fails = True
+
+        self.tick()
+
+        self.assertEqual(len(self.github.issues), 1)
+        self.assertIsNone(self.github.issues[0]["assignee"])
+
+    def test_a_failing_health_check_does_not_stop_the_timer(self) -> None:
+        self.finished_forecasts("failure", "failure", "failure", "failure")
+        self.github.issue_calls_fail = True
+
+        self.assertEqual(self.tick(), 0)
+
+        self.assertIn((TIMER_WORKFLOW, {"lane": "a"}), self.github.started)
 
 
 class EnsureTests(unittest.TestCase):

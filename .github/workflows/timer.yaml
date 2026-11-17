@@ -25,6 +25,7 @@ on:
 permissions:
   actions: write
   contents: read
+  issues: write # timer a opens an issue for the owner when forecasting runs keep failing
 
 # One run per timer at a time; a run started while another waits takes its place in line.
 concurrency:

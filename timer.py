@@ -18,6 +18,8 @@ The two timers tick half a period apart, so a forecasting run starts about twice
 and losing one timer does not stop the bot. Every forecasting run makes the same check
 (`ensure`), so any forecasting run brings both timers back, whoever started it.
 
+Timer a also opens an issue for the repository's owner when forecasting runs keep failing.
+
 The pace is the wait timer of the `timer` environment (Settings -> Environments -> timer).
 To pause the bot, disable the Timer workflow and the forecasting workflow.
 
@@ -51,6 +53,23 @@ REARM_RETRY_DELAYS = (15, 30, 60, 120, 240, 480, 900, 900, 900)
 CONFIRM_LOST_AFTER_SECONDS = 20
 # The forecasting job is capped at 50 minutes; a run still unfinished after this is stuck.
 FORECAST_STUCK_SECONDS = 90 * 60
+# Forecasting runs started by the timers fail silently: GitHub only emails the person who
+# started a run. When none of this many latest runs succeeded, an issue is opened for the owner.
+FAILED_RUNS_BEFORE_ALERT = 4
+REMIND_AFTER_SECONDS = 24 * 60 * 60
+ALERT_TITLE = "The forecasting bot needs attention"
+ALERT_BODY = """None of the last {count} forecasting runs succeeded, so the bot is probably not forecasting.
+
+Latest run: {url}
+Open it and read the "Run bot" step to see the error.
+
+The usual causes:
+- **The OpenRouter balance is used up.** Add credit at https://openrouter.ai/settings/credits.
+- **The Metaculus token stopped working.** Create a new token for the bot in your Metaculus account and save it as the `METACULUS_TOKEN` secret (Settings > Secrets and variables > Actions).
+- **Metaculus or OpenRouter has an outage.** Nothing to do: the runs recover by themselves.
+
+This issue was opened automatically by the Timer workflow. Close it once runs succeed again. While it stays open and runs keep failing, a reminder is added here once a day.
+"""
 
 
 class GhError(RuntimeError):
@@ -247,6 +266,36 @@ class Timer:
             self.log(f"::warning::Timer {lane} could not be started.")
         return started
 
+    def report_health(self) -> None:
+        """Tell the owner, through an issue, when forecasting runs keep failing."""
+        listing = self.gh(
+            "run", "list", "-R", self.repo, "--workflow", FORECAST_WORKFLOW, "--status", "completed",
+            "--limit", str(FAILED_RUNS_BEFORE_ALERT), "--json", "databaseId,conclusion,url",
+        )  # fmt: skip
+        runs = json.loads(listing)
+        # Anything but success counts: a run that hangs until its time limit ends as cancelled.
+        if len(runs) < FAILED_RUNS_BEFORE_ALERT or any(run["conclusion"] == "success" for run in runs):
+            return
+        latest = runs[0]["url"]
+        issues = json.loads(
+            self.gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "100", "--json", "number,title,updatedAt")
+        )
+        alerts = [issue for issue in issues if issue["title"] == ALERT_TITLE]
+        if not alerts:
+            body = ALERT_BODY.format(count=FAILED_RUNS_BEFORE_ALERT, url=latest)
+            create = ["issue", "create", "-R", self.repo, "--title", ALERT_TITLE, "--body", body]
+            try:  # assigning the owner makes sure they are notified
+                self.gh(*create, "--assignee", self.repo.split("/")[0])
+            except GhError:
+                self.gh(*create)
+            self.log("::warning::Forecasting runs keep failing; an issue was opened for the owner.")
+        elif (self.now() - parse_time(alerts[0]["updatedAt"])).total_seconds() > REMIND_AFTER_SECONDS:
+            self.gh(
+                "issue", "comment", str(alerts[0]["number"]), "-R", self.repo,
+                "--body", f"Forecasting runs are still failing. Latest run: {latest}",
+            )  # fmt: skip
+            self.log("::warning::Forecasting runs still fail; a reminder was added to the open issue.")
+
     # -------------------------------------------------------------------------- commands
 
     def tick(self, lane: str, run_id: str, delay: int = 0) -> int:
@@ -267,6 +316,8 @@ class Timer:
         for other in LANES:
             if other != lane:
                 self.safely(self.revive_if_lost, other, period, period // 2)
+        if lane == LANES[0]:  # one timer reports, so two ticks never open the same issue twice
+            self.safely(self.report_health)
 
         if not rearmed:
             rearmed = self.start(TIMER_WORKFLOW, {"lane": lane}, REARM_RETRY_DELAYS)
