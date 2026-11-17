@@ -7,7 +7,7 @@ What it adds to the template:
 - **It reads the resolution sources.** The bot fetches the pages a question says it will resolve from and pulls out the latest figures and dates (`research_tools.py`).
 - **Search-grounded research** that asks for dated facts, base rates, scheduled events and market prices, plus AskNews when credentials are present.
 - **Several forecasts per question**, rotated across the models of the active profile and combined by the framework (`profiles.py`).
-- **Guard rails**: probabilities kept away from 0 and 1, a floor under every option, and a spending cap per run (`run_bot.py`).
+- **Guard rails**: probabilities kept away from 0 and 1, a floor under every option, numeric answers put in order before the framework reads them, and a spending cap per run (`run_bot.py`).
 
 ```bash
 uv run python run_bot.py --mode test_questions    # smoke test on the unscored bot-testing-area

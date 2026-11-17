@@ -8,8 +8,9 @@ and changes three things:
    pulls recent news when AskNews credentials are present.
 2. Forecasting. Several forecasts are made per question, rotating through the models of the active
    profile, and combined by the framework (median for yes/no and numeric, mean for multiple choice).
-3. Guard rails. Probabilities are kept away from 0 and 1, every option keeps a little weight, and
-   each run has a spending cap (see run_bot.py).
+3. Guard rails. Probabilities are kept away from 0 and 1, every option keeps a little weight,
+   numeric answers are put in order before the framework reads them, and each run has a spending
+   cap (see run_bot.py).
 """
 from __future__ import annotations
 
