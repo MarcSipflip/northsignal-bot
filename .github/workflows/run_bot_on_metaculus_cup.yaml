@@ -1,9 +1,9 @@
 name: Forecast on Metaculus Cup
 
+# Manual only: bots win no prizes in the Metaculus Cup, so the NorthSignal bot does not spend
+# model credits on it automatically. Run it by hand to compare the bot against human forecasters.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 */2 * *" # runs at midnight every 2 days
 
 # Add concurrency group to prevent parallel runs
 concurrency:

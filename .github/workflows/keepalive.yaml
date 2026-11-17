@@ -1,0 +1,31 @@
+name: Keep the schedule alive
+
+# GitHub switches off scheduled workflows in a public repository after 60 days without activity.
+# Re-enabling them through the API resets that clock, so the bot keeps forecasting unattended.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 1,15 * *" # twice a month
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable the scheduled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for workflow in run_bot_on_tournament.yaml keepalive.yaml; do
+            state=$(gh api "repos/$REPO/actions/workflows/$workflow" --jq .state)
+            if [ "$state" = "disabled_manually" ]; then
+              # Someone paused the bot on purpose: never switch it back on behind their back.
+              echo "$workflow was switched off by hand; leaving it off."
+            else
+              gh api --method PUT "repos/$REPO/actions/workflows/$workflow/enable"
+              echo "$workflow: schedule kept alive (state was $state)."
+            fi
+          done

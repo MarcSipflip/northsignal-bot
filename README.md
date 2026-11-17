@@ -1,3 +1,24 @@
+# NorthSignal forecasting bot
+
+A bot for the Metaculus [FutureEval](https://www.metaculus.com/futureeval/) bot tournaments, built on the official template documented below.
+
+What it adds to the template:
+
+- **It reads the resolution sources.** The bot fetches the pages a question says it will resolve from and pulls out the latest figures and dates (`research_tools.py`).
+- **Search-grounded research** that asks for dated facts, base rates, scheduled events and market prices, plus AskNews when credentials are present.
+- **Several forecasts per question**, rotated across the models of the active profile and combined by the framework (`profiles.py`).
+- **Guard rails**: probabilities kept away from 0 and 1, a floor under every option, and a spending cap per run (`run_bot.py`).
+
+```bash
+uv run python run_bot.py --mode test_questions    # smoke test on the unscored bot-testing-area
+uv run python run_bot.py --mode tournament        # what the schedule runs: seasonal tournament + MiniBench
+uv run python -m unittest discover -s tests -v    # offline tests, no keys needed
+```
+
+The profile is chosen with the `BOT_PROFILE` environment variable (`lean` by default, `full` for competitive settings). `main.py` is the unmodified template, kept so each season's update merges cleanly.
+
+---
+
 # Simple Metaculus forecasting bot
 This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/futureeval/participate/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 
