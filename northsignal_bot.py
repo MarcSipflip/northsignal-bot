@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,7 @@ from forecasting_tools import (
 )
 from forecasting_tools.ai_models.resource_managers.monetary_cost_manager import MonetaryCostManager
 from forecasting_tools.data_models.multiple_choice_report import PredictedOption
+from forecasting_tools.data_models.numeric_report import Percentile
 from forecasting_tools.data_models.questions import DiscreteQuestion
 
 from profiles import Profile
@@ -74,6 +76,53 @@ def format_articles(articles: list) -> str:
             f"{article.summary}\n{article.article_url}"
         )
     return "\n\n".join(lines)
+
+
+def tidy_percentiles(percentiles: list[Percentile], lower_bound: float, upper_bound: float) -> list[Percentile]:
+    """Puts parsed percentiles into the shape NumericDistribution needs, changing them as little as possible.
+
+    Models sometimes repeat a value (a whole-number answer), slip one value out of order, or go far
+    outside the question's range. The framework rejects the last two. It also moves repeated values that
+    lie outside the range onto the bound, which scrambles the order when other values sit out there too,
+    and the question is then lost. So: one value per percentile, values in rising order, nothing further
+    than twice the range beyond a bound, and repeats spread by a sliver so that no two values are equal.
+    """
+    by_height: dict[float, float] = {}
+    for item in sorted(percentiles, key=lambda item: item.percentile):
+        by_height.setdefault(item.percentile, item.value)
+    span = upper_bound - lower_bound
+    if len(by_height) < 2 or span <= 0:
+        return percentiles
+    reach = 1.9 * span  # the framework refuses values more than 2 ranges beyond a bound
+    values = [min(max(value, lower_bound - reach), upper_bound + reach) for value in sorted(by_height.values())]
+    sliver = span * 1e-6
+    for index in range(1, len(values)):
+        if values[index] <= values[index - 1]:
+            # nextafter covers numbers so large that adding the sliver would change nothing
+            values[index] = max(values[index - 1] + sliver, math.nextafter(values[index - 1], math.inf))
+    return [Percentile(percentile=height, value=value) for height, value in zip(by_height, values)]
+
+
+class TidyNumericDistribution(NumericDistribution):
+    """The distribution the template builds numeric and date forecasts with, tidied first."""
+
+    @classmethod
+    def from_question(cls, percentiles: list[Percentile], question: Any, standardize_cdf: bool | None = None) -> NumericDistribution:
+        lower, upper = question.lower_bound, question.upper_bound
+        if isinstance(lower, datetime):
+            lower, upper = lower.timestamp(), upper.timestamp()
+        tidied = tidy_percentiles(percentiles, lower, upper)
+        before = [(item.percentile, item.value) for item in percentiles]
+        after = [(item.percentile, item.value) for item in tidied]
+        if before != after:
+            logger.info(f"Tidied the percentiles for {question.page_url}: {before} became {after}")
+        return NumericDistribution.from_question(tidied, question, standardize_cdf)
+
+
+# The template turns parsed percentiles into a forecast with NumericDistribution.from_question, in its
+# numeric and in its date code. Pointing that name at the tidy version puts the clean-up in both places
+# without copying either method.
+template.NumericDistribution = TidyNumericDistribution  # type: ignore[misc]
 
 
 class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]

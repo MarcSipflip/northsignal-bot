@@ -175,6 +175,72 @@ class DistributionTests(unittest.TestCase):
         self.assertTrue(all(later >= earlier for earlier, later in zip(cdf, cdf[1:])))
 
 
+# Question 46615 (17 November 2026): whole-number answers from 40 to 90 in steps of 5, open at both ends.
+# The models put much of their weight below the range and repeated values there, and the run failed.
+DISCOUNT_QUESTION = dict(
+    question_text="What will be the deepest percentage-off discount advertised?", unit_of_measure="%",
+    upper_bound=92.5, lower_bound=37.5, open_upper_bound=True, open_lower_bound=True, cdf_size=12,
+)
+DISCOUNT_FORECASTS = (
+    (20, 30, 50, 60, 60, 60, 70, 75, 80),
+    (20, 20, 20, 35, 50, 60, 65, 75, 85),
+    (15, 20, 20, 20, 21, 30, 50, 60, 70),
+)
+
+
+def as_percentiles(values) -> list[Percentile]:
+    return [Percentile(percentile=p / 100, value=v) for p, v in zip(PROMPT_PERCENTILES, values)]
+
+
+class TidyPercentilesTests(unittest.TestCase):
+    def tidy(self, values, lower=0.0, upper=100.0) -> list[float]:
+        return [item.value for item in northsignal_bot.tidy_percentiles(as_percentiles(values), lower, upper)]
+
+    def test_a_clean_forecast_is_left_as_it_is(self) -> None:
+        values = [10, 15, 22, 35, 40, 46, 60, 72, 80]
+        self.assertEqual(self.tidy(values), values)
+
+    def test_repeats_are_spread_by_a_sliver_and_stay_in_order(self) -> None:
+        tidied = self.tidy([20, 20, 20, 35, 50, 60, 60, 75, 85])
+        self.assertTrue(all(later > earlier for earlier, later in zip(tidied, tidied[1:])))
+        for original, value in zip([20, 20, 20, 35, 50, 60, 60, 75, 85], tidied):
+            self.assertAlmostEqual(value, original, places=3)
+
+    def test_a_value_out_of_order_is_put_back_in_line(self) -> None:
+        self.assertEqual(self.tidy([10, 15, 22, 40, 35, 46, 60, 72, 80]), [10, 15, 22, 35, 40, 46, 60, 72, 80])
+
+    def test_values_far_outside_the_range_are_pulled_within_reach(self) -> None:
+        tidied = self.tidy([-900, -900, 22, 35, 40, 46, 60, 700, 5000])
+        self.assertTrue(all(-200 < value < 300 for value in tidied))  # the framework's limit: two ranges beyond a bound
+        self.assertTrue(all(later > earlier for earlier, later in zip(tidied, tidied[1:])))
+        self.assertEqual(tidied[2:7], [22, 35, 40, 46, 60])
+
+    def test_one_value_is_kept_per_percentile(self) -> None:
+        doubled = as_percentiles([10, 15, 22, 35, 40, 46, 60, 72, 80]) + [Percentile(percentile=0.5, value=41)]
+        tidied = northsignal_bot.tidy_percentiles(doubled, 0, 100)
+        self.assertEqual([item.percentile for item in tidied], [p / 100 for p in PROMPT_PERCENTILES])
+
+    def test_repeats_of_very_large_numbers_still_end_up_different(self) -> None:
+        tidied = self.tidy([1e15] * 9, lower=1e15 - 1, upper=1e15 + 1)
+        self.assertTrue(all(later > earlier for earlier, later in zip(tidied, tidied[1:])))
+
+    def test_the_template_builds_its_forecasts_through_the_tidy_step(self) -> None:
+        self.assertIs(northsignal_bot.template.NumericDistribution, northsignal_bot.TidyNumericDistribution)
+
+    def test_the_forecasts_that_failed_on_17_november_now_build(self) -> None:
+        question = DiscreteQuestion(**DISCOUNT_QUESTION)
+        below_range = []
+        for values in DISCOUNT_FORECASTS:
+            distribution = northsignal_bot.TidyNumericDistribution.from_question(as_percentiles(values), question)
+            cdf = [point.percentile for point in distribution.get_cdf()]
+            self.assertEqual(len(cdf), 12)
+            self.assertTrue(all(later > earlier for earlier, later in zip(cdf, cdf[1:])))
+            below_range.append(cdf[0])
+        # The weight each forecast put below 37.5 is kept: about 14%, 42% and 67%.
+        for share, expected in zip(below_range, (0.1375, 0.4167, 0.675)):
+            self.assertAlmostEqual(share, expected, delta=0.02)
+
+
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
     def test_builds_on_the_upstream_template(self) -> None:
         self.assertTrue(issubclass(TemplateBot, ForecastBot))
@@ -233,6 +299,41 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected, forecast_prompt)
         self.assertNotIn("Recent news", forecast_prompt)  # no AskNews credentials in tests
         self.assertIn("https://data.example.org/index", forecast_prompt)
+
+    async def test_numeric_question_with_repeats_below_the_range_end_to_end(self) -> None:
+        profile = Profile(
+            name="test", forecasters=(ModelSpec("openrouter/test/a"),), predictions_per_question=3,
+            searchers=(ModelSpec("openrouter/test/search"),), helper=ModelSpec("openrouter/test/helper"),
+            max_source_pages=2, max_run_cost_usd=1.0,
+        )
+        bot = NorthSignalBot(profile=profile, publish_reports_to_metaculus=False)
+        bot._forecasters = [FakeLlm("fake/a", "Reasoning.\n\nPercentile 5: 20\nPercentile 10: 20")]
+        bot._searchers = [FakeLlm("fake/search", "SEARCH FINDINGS: 60% off on 2026-11-17.")]
+        helper = FakeLlm("fake/helper", "PAGE DIGEST: up to 60% off.")
+        bot.set_llm(helper, "summarizer")
+        bot.set_llm(helper, "parser")
+        question = DiscreteQuestion(
+            id_of_post=2, id_of_question=2, page_url="https://www.metaculus.com/questions/2/",
+            resolution_criteria="Resolves to the deepest discount shown.", fine_print="", background_info="",
+            **DISCOUNT_QUESTION,
+        )
+        answers = iter(DISCOUNT_FORECASTS)
+
+        async def fake_read_sources(urls, *args, **kwargs):
+            return []
+
+        async def fake_structure_output(text, output_type, **kwargs):
+            return as_percentiles(next(answers))
+
+        with mock.patch.object(northsignal_bot, "read_sources", fake_read_sources), mock.patch.object(
+            northsignal_bot.template, "structure_output", fake_structure_output
+        ):
+            reports = await bot.forecast_questions([question])
+
+        cdf = [point.percentile for point in reports[0].prediction.get_cdf()]
+        self.assertEqual(len(cdf), 12)
+        self.assertTrue(all(later > earlier for earlier, later in zip(cdf, cdf[1:])))
+        self.assertAlmostEqual(cdf[0], 0.41, delta=0.03)  # the middle forecast's weight below the range
 
     async def test_research_survives_a_failed_pass(self) -> None:
         profile = Profile(
