@@ -252,6 +252,94 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No research could be gathered", research)
 
 
+class _FakeArticle:
+    def __init__(self, title: str, day: int) -> None:
+        import datetime
+
+        self.eng_title = title
+        self.summary = f"Summary of {title}."
+        self.pub_date = datetime.datetime(2026, 11, day)
+        self.source_id = "Example Wire"
+        self.article_url = f"https://news.example.com/{day}"
+
+
+class _FakeAskNews:
+    """Stands in for the AskNews client: records how it was opened and which searches were made."""
+
+    opened_with: list[dict] = []
+    searches: list[str] = []
+
+    def __init__(self, **kwargs) -> None:
+        _FakeAskNews.opened_with.append(kwargs)
+        self.news = self
+
+    async def __aenter__(self) -> "_FakeAskNews":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+    async def search_news(self, *, query, n_articles, return_type, strategy):
+        _FakeAskNews.searches.append(strategy)
+        day = 15 if strategy == "latest news" else 3
+
+        class Response:
+            as_dicts = [_FakeArticle(f"{strategy} article", day)]
+
+        return Response()
+
+
+class NewsTests(unittest.IsolatedAsyncioTestCase):
+    def _bot(self, **env: str) -> NorthSignalBot:
+        profile = Profile(
+            name="test", forecasters=(ModelSpec("openrouter/test/a"),), predictions_per_question=1,
+            searchers=(), helper=ModelSpec("openrouter/test/helper"),
+            max_source_pages=1, max_run_cost_usd=1.0,
+        )
+        with mock.patch.dict(os.environ, env):
+            return NorthSignalBot(profile=profile, publish_reports_to_metaculus=False)
+
+    def test_a_template_placeholder_does_not_count_as_a_key(self) -> None:
+        self.assertFalse(self._bot()._use_asknews)
+        self.assertFalse(self._bot(ASKNEWS_API_KEY="REPLACE_ME")._use_asknews)
+        self.assertTrue(self._bot(ASKNEWS_API_KEY="real-key")._use_asknews)
+        self.assertFalse(self._bot(ASKNEWS_CLIENT_ID="id-without-secret")._use_asknews)
+
+    def test_archive_search_is_kept_for_the_seasonal_tournament(self) -> None:
+        seasonal = BinaryQuestion(question_text="Q", tournament_slugs=["fall-futureeval-2026"])
+        minibench = BinaryQuestion(question_text="Q", tournament_slugs=["minibench-2026-11-16"])
+        bot = self._bot(ASKNEWS_API_KEY="real-key")
+        self.assertTrue(bot._wants_archive_news(seasonal))
+        self.assertFalse(bot._wants_archive_news(minibench))
+        self.assertTrue(self._bot(ASKNEWS_API_KEY="k", ASKNEWS_ARCHIVE="all")._wants_archive_news(minibench))
+        self.assertFalse(self._bot(ASKNEWS_API_KEY="k", ASKNEWS_ARCHIVE="none")._wants_archive_news(seasonal))
+
+    def test_articles_are_listed_newest_first(self) -> None:
+        text = northsignal_bot.format_articles([_FakeArticle("Older", 3), _FakeArticle("Newer", 15)])
+        self.assertLess(text.index("Newer"), text.index("Older"))
+        self.assertIn("(2026-11-15, Example Wire)", text)
+        self.assertIn("https://news.example.com/3", text)
+
+    async def test_news_pass_spends_one_call_on_minibench_and_two_searches_on_seasonal(self) -> None:
+        seasonal = BinaryQuestion(question_text="Seasonal?", tournament_slugs=["fall-futureeval-2026"])
+        minibench = BinaryQuestion(question_text="Mini?", tournament_slugs=["minibench"])
+        with mock.patch.dict(os.environ, {"ASKNEWS_API_KEY": "real-key"}), mock.patch.object(
+            northsignal_bot, "AsyncAskNewsSDK", _FakeAskNews
+        ), mock.patch.object(northsignal_bot, "ASKNEWS_SECONDS_BETWEEN_CALLS", 0):
+            bot = self._bot(ASKNEWS_API_KEY="real-key")
+            _FakeAskNews.opened_with.clear()
+            _FakeAskNews.searches.clear()
+            mini_news = await bot._research_news(minibench)
+            self.assertEqual(_FakeAskNews.searches, ["latest news"])
+            seasonal_news = await bot._research_news(seasonal)
+            self.assertEqual(_FakeAskNews.searches, ["latest news", "latest news", "news knowledge"])
+        self.assertIn("latest news article", mini_news)
+        self.assertIn("news knowledge article", seasonal_news)
+        # Only the single API key is configured, so that is what the client must be opened with.
+        self.assertEqual(_FakeAskNews.opened_with[0]["api_key"], "real-key")
+        self.assertIsNone(_FakeAskNews.opened_with[0]["client_id"])
+
+
 class SpendingCapTests(unittest.IsolatedAsyncioTestCase):
     def _bot(self) -> NorthSignalBot:
         profile = Profile(

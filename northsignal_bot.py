@@ -20,8 +20,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 import main as template  # the upstream template bot
+from asknews_sdk import AsyncAskNewsSDK
 from forecasting_tools import (
-    AskNewsSearcher,
     BinaryQuestion,
     ForecastBot,
     GeneralLlm,
@@ -53,10 +53,33 @@ TemplateBot: type[ForecastBot] = next(
 
 NOTHING_RELEVANT = "NOTHING RELEVANT"
 
+# AskNews gives tournament bots 1,000 calls a month. A latest-news search (last 48 hours) costs one
+# call and an archive search costs five, and the free tier allows about one request every 10 seconds.
+ASKNEWS_SECONDS_BETWEEN_CALLS = 12
+ASKNEWS_CALL_TIMEOUT_SECONDS = 60
+PLACEHOLDER_VALUES = {"", "REPLACE_ME", "1234567890", "your-token-here", "your-api-key-here"}
+
+
+def _real_env(name: str) -> str | None:
+    """The environment variable's value, or None when it is unset or still a template placeholder."""
+    value = (os.getenv(name) or "").strip()
+    return None if value in PLACEHOLDER_VALUES else value
+
+
+def format_articles(articles: list) -> str:
+    lines = []
+    for article in sorted(articles, key=lambda item: item.pub_date, reverse=True):
+        lines.append(
+            f"**{article.eng_title}** ({article.pub_date:%Y-%m-%d}, {article.source_id})\n"
+            f"{article.summary}\n{article.article_url}"
+        )
+    return "\n\n".join(lines)
+
 
 class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]
     _max_concurrent_questions = 3
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
+    _asknews_lock = asyncio.Lock()  # one AskNews request at a time, spaced out, across all questions
 
     def __init__(self, *, profile: Profile, **kwargs: Any) -> None:
         self.profile = profile
@@ -64,8 +87,10 @@ class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]
         self._searchers: list[GeneralLlm] = [spec.build() for spec in profile.searchers]
         self._next_forecaster = 0
         self._use_asknews = bool(
-            (os.getenv("ASKNEWS_CLIENT_ID") and os.getenv("ASKNEWS_SECRET")) or os.getenv("ASKNEWS_API_KEY")
+            (_real_env("ASKNEWS_CLIENT_ID") and _real_env("ASKNEWS_SECRET")) or _real_env("ASKNEWS_API_KEY")
         )
+        # Which questions also get the five-call archive search: "seasonal" (default), "all" or "none".
+        self._asknews_archive = (os.getenv("ASKNEWS_ARCHIVE") or "seasonal").strip().lower()
         helper = profile.helper.build()
         super().__init__(
             research_reports_per_question=1,
@@ -204,12 +229,45 @@ class NorthSignalBot(TemplateBot):  # type: ignore[misc, valid-type]
             passes.append(f"**{label}**\n{answer.strip()}")
         return "\n\n".join(passes)
 
+    def _wants_archive_news(self, question: MetaculusQuestion) -> bool:
+        """The archive search costs five calls, so by default it is kept for the seasonal tournament,
+        where each question is worth more than in the fortnightly MiniBench rounds."""
+        if self._asknews_archive == "all":
+            return True
+        if self._asknews_archive == "none":
+            return False
+        return not any("minibench" in slug.lower() for slug in question.tournament_slugs)
+
     async def _research_news(self, question: MetaculusQuestion) -> str:
         if not self._use_asknews:
             return ""
-        return await AskNewsSearcher().call_preconfigured_version(
-            "asknews/news-summaries", question.question_text
-        )
+        client_id, client_secret = _real_env("ASKNEWS_CLIENT_ID"), _real_env("ASKNEWS_SECRET")
+        use_oauth = bool(client_id and client_secret)
+        strategies = ["latest news"] + (["news knowledge"] if self._wants_archive_news(question) else [])
+        articles: list = []
+        async with self._asknews_lock:
+            async with AsyncAskNewsSDK(
+                client_id=client_id if use_oauth else None,
+                client_secret=client_secret if use_oauth else None,
+                api_key=None if use_oauth else _real_env("ASKNEWS_API_KEY"),
+                scopes={"news"},
+            ) as ask:
+                for strategy in strategies:
+                    # Every question's research waits on this pass, so a hung request must not stall the run.
+                    response = await asyncio.wait_for(
+                        ask.news.search_news(
+                            query=question.question_text,
+                            n_articles=6 if strategy == "latest news" else 10,
+                            return_type="both",
+                            strategy=strategy,
+                        ),
+                        timeout=ASKNEWS_CALL_TIMEOUT_SECONDS,
+                    )
+                    articles += response.as_dicts or []
+                    await asyncio.sleep(ASKNEWS_SECONDS_BETWEEN_CALLS)
+        if not articles:
+            return "No recent news articles were found."
+        return format_articles(articles)
 
     # --------------------------------------------------------------- forecasts
 
