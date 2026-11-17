@@ -1,6 +1,6 @@
 name: Forecast on new AI tournament questions
 
-# Runs are started by the Timer workflow (see timer.py), about every 20 minutes. The bot skips
+# Runs are started by the Timer workflow (see timer.py), about every 15 minutes. The bot skips
 # questions it has already forecast. GitHub's own schedule below is only a backup: it proved
 # unreliable for this repository, but when it does fire it restarts the timers.
 on:
