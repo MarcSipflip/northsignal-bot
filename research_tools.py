@@ -40,7 +40,8 @@ SKIPPED_EXTENSIONS = (
     ".xlsx", ".xls", ".docx", ".pptx", ".mp4", ".mp3", ".mov",
 )
 
-USER_AGENT = "Mozilla/5.0 (compatible; NorthSignalBot/1.0; forecasting research)"
+# An honest, contactable identity: sites such as Wikipedia refuse anonymous-looking bots.
+USER_AGENT = "NorthSignalBot/1.0 (forecasting research; +https://github.com/MarcSipflip/northsignal-bot)"
 READER_PREFIX = "https://r.jina.ai/"  # renders script-built pages to text; used only as a fallback
 MAX_DOWNLOAD_BYTES = 3_000_000
 MIN_USEFUL_CHARS = 400
