@@ -39,8 +39,6 @@ jobs:
       name: timer
       deployment: false # only the wait timer is wanted, not a deployment record per run
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
       - name: Start a forecasting run and the next timer run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,4 +46,14 @@ jobs:
           LANE: ${{ inputs.lane }}
           DELAY: ${{ inputs.delay }}
           RUN_ID: ${{ github.run_id }}
-        run: python3 timer.py tick --lane "$LANE" --run-id "$RUN_ID" --delay "${DELAY:-0}"
+        run: |
+          # Only timer.py is needed, so fetch that one file instead of checking out the repository.
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/$GH_REPO/contents/timer.py?ref=$GITHUB_SHA" -H "Accept: application/vnd.github.raw+json" > timer.py; then
+              break
+            fi
+            echo "Could not fetch timer.py (attempt $attempt); trying again."
+            sleep 20
+          done
+          test -s timer.py || { echo "::error::Could not fetch timer.py, so this timer stops. The other timer restarts it."; exit 1; }
+          python3 timer.py tick --lane "$LANE" --run-id "$RUN_ID" --delay "${DELAY:-0}"

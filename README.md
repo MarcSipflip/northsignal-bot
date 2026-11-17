@@ -11,11 +11,20 @@ What it adds to the template:
 
 ```bash
 uv run python run_bot.py --mode test_questions    # smoke test on the unscored bot-testing-area
-uv run python run_bot.py --mode tournament        # what the schedule runs: seasonal tournament + MiniBench
+uv run python run_bot.py --mode tournament        # what the timers run: seasonal tournament + MiniBench
 uv run python -m unittest discover -s tests -v    # offline tests, no keys needed
 ```
 
 The profile is chosen with the `BOT_PROFILE` environment variable (`lean` by default, `full` for competitive settings). `main.py` is the unmodified template, kept so each season's update merges cleanly.
+
+## How it stays on schedule
+
+Questions stay open for about three hours, and GitHub's own `schedule` trigger proved unreliable for this repository (no run in the first three hours). So the repository keeps time itself, with the **Timer** workflow and `timer.py`:
+
+- A timer run waits in the `timer` environment, whose wait timer holds the job without using a runner. Then it starts a forecasting run and the next run of the same timer.
+- Two timers, a and b, tick half a period apart. Each restarts the other if it was lost, and every forecasting run restarts any timer that stopped.
+- The pace is the environment's wait timer (Settings → Environments → timer): 30 minutes gives a forecasting run about every 15 minutes.
+- To pause the bot, disable the **Timer** workflow and **Forecast on new AI tournament questions** in the Actions tab. To resume, enable both and run the forecasting workflow once by hand.
 
 ---
 

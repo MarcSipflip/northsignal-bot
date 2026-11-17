@@ -40,7 +40,7 @@ ENVIRONMENT = "timer"
 LANES = ("a", "b")
 
 # Used when the environment's wait timer cannot be read or has been removed.
-DEFAULT_PERIOD_SECONDS = 40 * 60
+DEFAULT_PERIOD_SECONDS = 30 * 60
 # A run that waited within this margin of a full period is on pace.
 PACE_TOLERANCE_SECONDS = 60
 QUICK_RETRY_DELAYS = (10, 30)
@@ -49,9 +49,6 @@ REARM_RETRY_DELAYS = (15, 30, 60, 120, 240, 480, 900, 900, 900)
 # A timer is declared lost only after two looks this far apart: a run that is handing over
 # to its successor can be missing from a single listing.
 CONFIRM_LOST_AFTER_SECONDS = 20
-# Timer b looks for a running forecast slightly later than timer a, so two timers that
-# happen to tick together start one forecasting run instead of two.
-TIE_BREAK_SECONDS = 15
 # The forecasting job is capped at 50 minutes; a run still unfinished after this is stuck.
 FORECAST_STUCK_SECONDS = 90 * 60
 
@@ -266,8 +263,6 @@ class Timer:
 
         # The successor comes first: everything after it gives GitHub time to list the new run.
         rearmed = self.start(TIMER_WORKFLOW, {"lane": lane})
-        if lane != LANES[0]:
-            self.sleep(TIE_BREAK_SECONDS)
         self.safely(self.start_forecast)
         for other in LANES:
             if other != lane:

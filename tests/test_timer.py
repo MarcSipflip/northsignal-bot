@@ -175,14 +175,13 @@ class TickTests(unittest.TestCase):
 
         self.assertEqual(self.github.started_workflows(), [TIMER_WORKFLOW])
 
-    def test_timers_ticking_together_start_one_forecasting_run(self) -> None:
+    def test_a_timer_ticking_right_after_the_other_does_not_start_a_second_forecasting_run(self) -> None:
         run_a, run_b = self.ticking_run("a"), self.ticking_run("b")
 
         self.timer.tick("a", run_a)
         self.timer.tick("b", run_b)
 
         self.assertEqual(self.github.started_workflows().count(FORECAST_WORKFLOW), 1)
-        self.assertIn(timer.TIE_BREAK_SECONDS, self.github.slept, "timer b must look a little later than timer a")
 
     def test_a_stuck_forecasting_run_is_cancelled_and_replaced(self) -> None:
         run_id = self.ticking_run("a")
