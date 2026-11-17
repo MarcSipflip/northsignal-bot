@@ -26,13 +26,21 @@ Questions stay open for about three hours, and GitHub's own `schedule` trigger p
 - The pace is the environment's wait timer (Settings → Environments → timer): 30 minutes gives a forecasting run about every 15 minutes.
 - To pause the bot, disable the **Timer** workflow and **Forecast on new AI tournament questions** in the Actions tab. To resume, enable both and run the forecasting workflow once by hand.
 
-### Optional: a safety net on your own computer
+### Optional: a safety net outside GitHub
 
-If both timers were lost at the same moment, for example in a long GitHub outage, nothing on GitHub would restart them. The `watchdog` folder covers that case from a Windows computer:
+If both timers were lost at the same moment, for example in a long GitHub outage, nothing on GitHub would restart them. The `watchdog` folder covers that case from a machine of your own. It asks GitHub when the last forecasting run started. If none started in the last 35 minutes and none is under way, it starts one, and that run restarts the timers. It does nothing while the bot is paused, that is, while either workflow is disabled by hand.
 
-- Once an hour, `watchdog.ps1` asks GitHub when the last forecasting run started. If none started in the last 35 minutes and none is under way, it starts one, and that run restarts the timers.
-- It does nothing while the bot is paused, that is, while either workflow is disabled by hand.
-- It needs the [GitHub CLI](https://cli.github.com/) signed in on that computer, and it only runs while you are signed in to Windows. No window appears.
+**On a Linux server that is always on.** Cron runs `server_watchdog.py` every 15 minutes. It needs Python 3 on the server, SSH access as root with a key, and a GitHub token of its own: a fine-grained token limited to this repository, with the permission "Actions: Read and write".
+
+```bash
+python watchdog/deploy.py --host root@your-server install             # shows what would be done; add --apply to do it
+python watchdog/deploy.py --host root@your-server token FILE --apply  # hands over the token saved in FILE, then deletes FILE
+python watchdog/deploy.py --host root@your-server remove --apply      # takes everything off the server
+```
+
+The check runs as a user of its own without login and adds one line per check to `/opt/northsignal-watchdog/watchdog.log`. In a fork, set your own repository at the top of `server_watchdog.py` before installing.
+
+**On a Windows computer.** A scheduled task runs `watchdog.ps1` once an hour. It needs the [GitHub CLI](https://cli.github.com/) signed in on that computer, and it only runs while you are signed in to Windows. No window appears.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File watchdog\install.ps1           # install or update the hourly task
