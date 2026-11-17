@@ -1,0 +1,51 @@
+name: Timer
+run-name: Timer ${{ inputs.lane }}
+
+# GitHub's own `schedule` trigger did not fire for this repository, and tournament questions
+# stay open for only about three hours. So the repository keeps time itself: each run waits
+# in the `timer` environment (its wait timer holds the job without using a runner), then
+# starts a forecasting run and the next run of the same timer. Two timers, a and b, tick
+# half a period apart and restart each other if one is lost. The logic is in timer.py.
+#
+# Pace: Settings -> Environments -> timer -> Wait timer.
+# To pause the bot: disable this workflow and "Forecast on new AI tournament questions".
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: Which of the two timers this run belongs to
+        type: choice
+        options: [a, b]
+        default: a
+      delay:
+        description: Extra seconds to wait before ticking (set when a timer is restarted)
+        type: number
+        default: 0
+
+permissions:
+  actions: write
+  contents: read
+
+# One run per timer at a time; a run started while another waits takes its place in line.
+concurrency:
+  group: timer-${{ inputs.lane }}
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150 # covers an hour of retries when GitHub has an incident
+    environment:
+      name: timer
+      deployment: false # only the wait timer is wanted, not a deployment record per run
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Start a forecasting run and the next timer run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LANE: ${{ inputs.lane }}
+          DELAY: ${{ inputs.delay }}
+          RUN_ID: ${{ github.run_id }}
+        run: python3 timer.py tick --lane "$LANE" --run-id "$RUN_ID" --delay "${DELAY:-0}"

@@ -1,9 +1,16 @@
 name: Forecast on new AI tournament questions
 
+# Runs are started by the Timer workflow (see timer.py), about every 20 minutes. The bot skips
+# questions it has already forecast. GitHub's own schedule below is only a backup: it proved
+# unreliable for this repository, but when it does fire it restarts the timers.
 on:
   workflow_dispatch:
   schedule:
-    - cron: "11,31,51 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
+    - cron: "43 * * * *"
+
+permissions:
+  contents: read
+  actions: write # the last step restarts the timers if they stopped
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -46,3 +53,10 @@ jobs:
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
+      - name: Keep the timers running
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 timer.py ensure
